@@ -95,6 +95,23 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# Simple in-memory rate limiter: max 3 OTP requests per email per 10 minutes
+from collections import defaultdict
+from datetime import datetime, timedelta
+_otp_rate: dict = defaultdict(list)   # email -> [timestamp, ...]
+
+def _check_otp_rate(email: str) -> None:
+    now = datetime.utcnow()
+    window = now - timedelta(minutes=10)
+    _otp_rate[email] = [t for t in _otp_rate[email] if t > window]
+    if len(_otp_rate[email]) >= 3:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait 10 minutes before requesting another code.",
+        )
+    _otp_rate[email].append(now)
+
+
 def require_auth(x_auth_token: str = Header(default="")) -> dict:
     """FastAPI dependency — validates session token from X-Auth-Token header."""
     session = get_session(x_auth_token)
@@ -119,6 +136,7 @@ def request_otp_endpoint(body: OTPRequest):
     email = body.email.strip()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email address is required.")
+    _check_otp_rate(email)
     try:
         sent = request_otp(email)
         return {
