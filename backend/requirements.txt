@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────────────────────
+# Document AI Assistant — Backend Dependencies
+# ──────────────────────────────────────────────────────────────
+
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# PDF text extraction
+pypdf==4.2.0
+
+# Embeddings  (downloads ~80 MB model on first run — cached afterwards)
+sentence-transformers==3.0.1
+
+# Vector database (local, no external service required)
+chromadb==0.5.3
+
+# ── FREE LLM: Groq (default backend) ──────────────────────────
+# Get a free API key at https://console.groq.com  (no credit card)
+groq>=1.0.0
+
+# ── PAID LLM: OpenAI (optional, set LLM_BACKEND=openai) ───────
+openai==1.35.3
+
+# HTTP client (used for local Ollama calls)
+requests==2.32.3
+
+# Data validation (FastAPI requirement)
+pydantic==2.7.4
+
+# Required by FastAPI for file uploads
+python-multipart==0.0.9
+
+# Load .env file automatically
+python-dotenv==1.0.1

@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: document-ai-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      # ── LLM ──────────────────────────────────────────────────
+      - key: LLM_BACKEND
+        value: groq
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_API_KEY
+        sync: false          # Enter securely in Render dashboard
+      - key: TOP_K_RESULTS
+        value: "5"
+
+      # ── Admin ─────────────────────────────────────────────────
+      - key: ADMIN_KEY
+        sync: false          # Enter securely in Render dashboard
+
+      # ── Email (OTP) ────────────────────────────────────────────
+      - key: EMAIL_HOST
+        value: smtp.gmail.com
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_USER
+        value: 776438@gmail.com
+      - key: EMAIL_PASS
+        sync: false          # Enter securely in Render dashboard
+      - key: EMAIL_FROM
+        value: "Document AI <776438@gmail.com>"
