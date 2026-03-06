@@ -1,8 +1,42 @@
 # Document AI Assistant
 
-A full-stack **Retrieval-Augmented Generation (RAG)** demo application.
+An AI-powered SaaS application — upload PDFs and ask questions in natural language.
+Answers are grounded in your document using **RAG (Retrieval-Augmented Generation)**.
 
-Users upload PDF documents, ask questions in a chat interface, and receive answers grounded in the document content — powered by ChromaDB, sentence-transformers, and OpenAI (or a local LLM).
+## Live Demo
+
+| Service | URL |
+|---------|-----|
+| **Frontend** | https://doc-ai-assistant.vercel.app |
+| **Backend API** | https://abhi6438-doc-ai-backend.hf.space |
+| **API Docs** | https://abhi6438-doc-ai-backend.hf.space/docs |
+| **Health Check** | https://abhi6438-doc-ai-backend.hf.space/health |
+
+---
+
+## Features
+
+- **Email OTP verification** — users must verify their email before accessing the app
+- **PDF / DOCX / TXT upload** — drag-and-drop document ingestion
+- **Semantic search** — ChromaDB + sentence-transformers embeddings
+- **RAG Q&A** — Groq LLM (free, no credit card) answers from your document
+- **Admin analytics** — track uploads, questions, and registered users
+- **Dark mode** — full light/dark theme support
+- **Mobile-friendly** — responsive layout with bottom tab navigation
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18, TailwindCSS, Framer Motion, Lucide React |
+| Backend | Python, FastAPI, Uvicorn |
+| Embeddings | sentence-transformers `all-MiniLM-L6-v2` |
+| Vector DB | ChromaDB (local, persistent) |
+| LLM | Groq (`llama-3.1-8b-instant`) — free tier |
+| Auth | Email OTP via Gmail SMTP |
+| PDF parsing | PyPDF |
 
 ---
 
@@ -10,16 +44,20 @@ Users upload PDF documents, ask questions in a chat interface, and receive answe
 
 ```
 User Browser
-    │
+    │  (must verify email via OTP first)
     ▼
-React Frontend (port 3000)
-    │  POST /upload  →  PDF bytes
-    │  POST /ask     →  question text
+React Frontend — Vercel
+    │  POST /auth/request-otp  →  sends email OTP
+    │  POST /auth/verify-otp   →  returns session token
+    │  POST /upload            →  PDF bytes  (auth required)
+    │  POST /ask               →  question   (auth required)
     ▼
-FastAPI Backend (port 8000)
-    ├── pdf_loader.py      Extract text, chunk into ~500 char pieces
-    ├── vector_store.py    Embed chunks (all-MiniLM-L6-v2) → ChromaDB
-    └── rag_service.py     Similarity search → RAG prompt → LLM → answer
+FastAPI Backend — HuggingFace Spaces
+    ├── auth.py          Email OTP + session management
+    ├── analytics.py     Event logging (JSONL)
+    ├── pdf_loader.py    Extract text, chunk into ~500 char pieces
+    ├── vector_store.py  Embed chunks → ChromaDB
+    └── rag_service.py   Similarity search → RAG prompt → Groq LLM
 ```
 
 ---
@@ -27,196 +65,89 @@ FastAPI Backend (port 8000)
 ## Project Structure
 
 ```
-project-root/
+doc-ai-assistant/
 ├── backend/
-│   ├── main.py            FastAPI app — /upload and /ask endpoints
-│   ├── rag_service.py     RAG pipeline: retrieve + prompt + LLM call
+│   ├── main.py            FastAPI app — all endpoints
+│   ├── auth.py            Email OTP authentication
+│   ├── analytics.py       Usage tracking (JSONL)
+│   ├── rag_service.py     RAG pipeline + Groq/OpenAI/Ollama
 │   ├── vector_store.py    ChromaDB init, embed, store, search
-│   ├── pdf_loader.py      PDF text extraction and chunking
-│   └── requirements.txt
+│   ├── pdf_loader.py      PDF/DOCX/TXT extraction and chunking
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── frontend/
-│   ├── public/
-│   │   └── index.html
+│   ├── public/index.html
 │   ├── src/
-│   │   ├── App.js         Root component + layout
-│   │   ├── App.css        All styles (dark theme)
-│   │   ├── Upload.js      Drag-and-drop PDF upload
-│   │   ├── Chat.js        Chat interface with RAG responses
-│   │   └── index.js       React entry point
+│   │   ├── App.js                    Root + auth gate
+│   │   ├── components/
+│   │   │   ├── AuthGate.js           Email OTP verification screen
+│   │   │   ├── Navbar.js             Top navigation
+│   │   │   ├── FileUploader.js       Drag-and-drop upload
+│   │   │   ├── DocumentList.js       Uploaded docs list
+│   │   │   ├── ChatWindow.js         Chat interface
+│   │   │   ├── ChatMessage.js        Message bubbles + Markdown
+│   │   │   ├── ChatInput.js          Input bar + suggestions
+│   │   │   └── StatsPanel.js         Admin analytics dashboard
+│   │   └── index.css                 TailwindCSS + glassmorphism styles
+│   ├── tailwind.config.js
 │   └── package.json
+├── render.yaml            Render.com deployment config
 └── README.md
 ```
 
 ---
 
-## Prerequisites
+## Local Development
 
-| Tool | Version |
-|------|---------|
-| Python | 3.10+ |
-| Node.js | 18+ |
-| npm | 9+ |
-
----
-
-## Local Setup
-
-### 1. Clone / navigate to the project
-
-```bash
-cd project-root
-```
-
-### 2. Backend
+### Backend
 
 ```bash
 cd backend
-
-# Create and activate a virtual environment (recommended)
 python -m venv venv
-source venv/bin/activate        # macOS / Linux
-# venv\Scripts\activate         # Windows
-
-# Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Set your OpenAI API key
-export OPENAI_API_KEY="sk-..."  # macOS / Linux
-# set OPENAI_API_KEY=sk-...     # Windows cmd
-
-# Start the API server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+cp .env.example .env            # fill in your keys
+uvicorn main:app --reload --port 8000
 ```
 
-Open [http://localhost:8000/docs](http://localhost:8000/docs) to explore the Swagger UI.
-
-### 3. Frontend
+### Frontend
 
 ```bash
 cd frontend
-
-# Install packages
 npm install
-
-# Start the dev server
-npm start
+npm start                       # runs on http://localhost:3000
 ```
-
-Open [http://localhost:3000](http://localhost:3000) — the app is ready.
 
 ---
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | *(required)* | Your OpenAI secret key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Any OpenAI chat model |
-| `LLM_BACKEND` | `openai` | `openai` or `local` (Ollama) |
-| `OLLAMA_MODEL` | `llama3` | Ollama model name |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `TOP_K_RESULTS` | `5` | Number of chunks sent to LLM |
-| `REACT_APP_API_URL` | *(empty)* | Backend base URL for production builds |
+### Backend (`backend/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `LLM_BACKEND` | `groq` / `openai` / `local` |
+| `GROQ_API_KEY` | Free key from console.groq.com |
+| `GROQ_MODEL` | e.g. `llama-3.1-8b-instant` |
+| `ADMIN_KEY` | Password for `/admin/stats` endpoint |
+| `EMAIL_HOST` | SMTP host (e.g. `smtp.gmail.com`) |
+| `EMAIL_PORT` | SMTP port (e.g. `587`) |
+| `EMAIL_USER` | Gmail address |
+| `EMAIL_PASS` | Gmail App Password |
+| `TOP_K_RESULTS` | Chunks sent to LLM (default `5`) |
+
+### Frontend
+
+| Variable | Description |
+|----------|-------------|
+| `REACT_APP_API_URL` | Backend URL (e.g. `https://abhi6438-doc-ai-backend.hf.space`) |
 
 ---
 
-## Switching to a Local LLM (no OpenAI key needed)
+## Admin Analytics
 
-1. Install [Ollama](https://ollama.com/download)
-2. Pull a model: `ollama pull llama3`
-3. Start the server: `ollama serve`
-4. Set the backend env vars:
+Access the analytics dashboard:
+- In the app: click the **Bell** icon or **Analytics** in the user menu
+- Direct API: `GET https://abhi6438-doc-ai-backend.hf.space/admin/stats?key=YOUR_ADMIN_KEY`
 
-```bash
-export LLM_BACKEND=local
-export OLLAMA_MODEL=llama3
-```
-
----
-
-## How It Works
-
-### Upload flow (`POST /upload`)
-
-```
-PDF file bytes
-    └─► pdf_loader.extract_text_from_pdf()   — PyPDF
-    └─► split_text_into_chunks(size=500)     — overlapping ~50 char windows
-    └─► vector_store.embed_texts()           — all-MiniLM-L6-v2 → 384-dim vectors
-    └─► chromadb.collection.add()            — persisted to ./backend/chroma_db/
-```
-
-### Ask flow (`POST /ask`)
-
-```
-User question
-    └─► embed question                       — same model
-    └─► chromadb.collection.query(top_k=5)  — cosine similarity
-    └─► build RAG prompt
-            ┌──────────────────────────────────────────┐
-            │ CONTEXT: <chunk 1> ... <chunk 5>         │
-            │ QUESTION: What is the refund policy?     │
-            │ ANSWER:                                  │
-            └──────────────────────────────────────────┘
-    └─► LLM (OpenAI / Ollama)
-    └─► { answer, sources } → frontend
-```
-
----
-
-## Deployment
-
-### Backend on Render (free tier)
-
-1. Push your `backend/` folder to a GitHub repository.
-2. Go to [render.com](https://render.com) → **New Web Service**.
-3. Select the repo; set:
-   - **Runtime**: Python 3
-   - **Build command**: `pip install -r requirements.txt`
-   - **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-4. Add environment variables in the Render dashboard:
-   - `OPENAI_API_KEY` = your key
-5. Deploy — Render provides a public HTTPS URL.
-
-> **Note on ChromaDB persistence**: Render's free tier uses ephemeral disk.
-> For production, swap ChromaDB for a managed vector DB (Pinecone, Weaviate, etc.)
-> or mount a persistent disk in Render.
-
-### Frontend on Vercel
-
-1. Push your `frontend/` folder (or the whole repo) to GitHub.
-2. Go to [vercel.com](https://vercel.com) → **New Project** → import repo.
-3. Set:
-   - **Root directory**: `frontend`
-   - **Build command**: `npm run build`
-   - **Output directory**: `build`
-4. Add environment variable:
-   - `REACT_APP_API_URL` = `https://your-backend.onrender.com`
-5. Deploy — Vercel provides a public HTTPS URL.
-
----
-
-## Demo Workflow (for AI interviews)
-
-| Step | Action |
-|------|--------|
-| 1 | Open the app at `http://localhost:3000` |
-| 2 | Drag-and-drop a PDF (e.g. a company policy doc) into the upload zone |
-| 3 | Wait for "X chunks indexed" confirmation |
-| 4 | Type a question: *"What is the refund policy?"* |
-| 5 | AI returns an answer grounded in the document |
-| 6 | Expand "N source excerpts" to show the retrieved passages |
-
----
-
-## Tech Stack Summary
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, Axios, react-dropzone, react-markdown |
-| Backend | Python, FastAPI, Uvicorn |
-| Embeddings | sentence-transformers `all-MiniLM-L6-v2` |
-| Vector DB | ChromaDB (local, persistent) |
-| LLM (default) | OpenAI `gpt-4o-mini` |
-| LLM (local) | Ollama (`llama3` or any compatible model) |
-| PDF parsing | PyPDF |
+Shows: uploads, questions, unique users, 7-day chart, registered users list, recent activity.
