@@ -1,5 +1,7 @@
-// Vercel serverless function — email relay for HuggingFace Spaces backend
-const https = require("https");
+// Vercel serverless function — email relay using Gmail SMTP
+// Vercel's servers can reach Gmail SMTP (unlike HuggingFace Spaces).
+
+const nodemailer = require("nodemailer");
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -18,53 +20,23 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Missing to, subject, or html" });
   }
 
-  const apiKey    = process.env.MAILJET_API_KEY;
-  const secretKey = process.env.MAILJET_SECRET_KEY;
-  const fromAddr  = process.env.EMAIL_FROM_ADDR || "776438@gmail.com";
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
 
-  if (!apiKey || !secretKey) {
-    return res.status(500).json({ error: "Email not configured" });
+  try {
+    await transporter.sendMail({
+      from: `"Document AI" <${process.env.GMAIL_USER}>`,
+      to,
+      subject,
+      html,
+    });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
-
-  const credentials = Buffer.from(`${apiKey}:${secretKey}`).toString("base64");
-  const body = JSON.stringify({
-    Messages: [{
-      From:     { Email: fromAddr, Name: "Document AI" },
-      To:       [{ Email: to }],
-      Subject:  subject,
-      HTMLPart: html,
-    }],
-  });
-
-  await new Promise((resolve, reject) => {
-    const options = {
-      hostname: "api.mailjet.com",
-      path:     "/v3.1/send",
-      method:   "POST",
-      headers:  {
-        Authorization:  `Basic ${credentials}`,
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    };
-    const request = https.request(options, (r) => {
-      let data = "";
-      r.on("data", (chunk) => { data += chunk; });
-      r.on("end", () => {
-        if (r.statusCode >= 200 && r.statusCode < 300) {
-          res.status(200).json({ success: true });
-          resolve();
-        } else {
-          res.status(500).json({ error: data });
-          resolve();
-        }
-      });
-    });
-    request.on("error", (err) => {
-      res.status(500).json({ error: err.message });
-      resolve();
-    });
-    request.write(body);
-    request.end();
-  });
 };
