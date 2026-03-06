@@ -1,39 +1,37 @@
 """
 auth.py — Email OTP authentication
 -----------------------------------
-Uses Resend API (HTTP) as primary email sender — works on all cloud platforms
-including HuggingFace Spaces which blocks SMTP ports.
-Falls back to SMTP if RESEND_API_KEY is not set.
+Tries multiple HTTP-based email APIs in order (no SMTP — works on HuggingFace Spaces):
+  1. Brevo (formerly Sendinblue) — free 300 emails/day, sign up at brevo.com
+  2. SendGrid — free 100 emails/day, sign up at sendgrid.com
+  3. Resend — free 3000/month (may be blocked on some cloud IPs)
+  4. Dev mode — prints OTP to server console
 
-Setup (Resend — free, no credit card):
-  1. Sign up at resend.com (free: 3,000 emails/month)
-  2. Go to API Keys → Create API Key
-  3. Set RESEND_API_KEY=re_xxxx in your environment variables
-  4. Set EMAIL_FROM to a verified sender (use onboarding@resend.dev for testing)
+Setup (Brevo — recommended):
+  1. Sign up at brevo.com (free, no credit card)
+  2. Go to Account → SMTP & API → API Keys → Generate
+  3. Set BREVO_API_KEY=your_key in environment variables
+  4. Set EMAIL_FROM_ADDR to your verified sender email
+  5. To verify sender: Brevo dashboard → Senders & IPs → Senders → Add a sender
 """
 
 import os
 import json
 import urllib.request
 import urllib.error
-import smtplib
 import random
 import string
 import uuid
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
 # ── Config ─────────────────────────────────────────────────────────────────
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-EMAIL_FROM     = os.getenv("EMAIL_FROM", "Document AI <onboarding@resend.dev>")
+BREVO_API_KEY    = os.getenv("BREVO_API_KEY", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+RESEND_API_KEY   = os.getenv("RESEND_API_KEY", "")
 
-# SMTP fallback (for local dev)
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_USER = os.getenv("EMAIL_USER", "")
-EMAIL_PASS = os.getenv("EMAIL_PASS", "")
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Document AI")
+EMAIL_FROM_ADDR = os.getenv("EMAIL_FROM_ADDR", "")   # e.g. you@yourdomain.com
 
 OTP_EXPIRY_MINUTES   = 10
 SESSION_EXPIRY_HOURS = 24
@@ -68,45 +66,70 @@ def _otp_email_html(otp: str) -> str:
 </div></body></html>"""
 
 
-def _send_via_resend(to_email: str, subject: str, html_body: str) -> None:
-    """Send email via Resend HTTP API (works on HuggingFace Spaces)."""
-    payload = json.dumps({
-        "from":    EMAIL_FROM,
-        "to":      [to_email],
-        "subject": subject,
-        "html":    html_body,
-    }).encode("utf-8")
+def _http_post(url: str, payload: dict, headers: dict) -> None:
+    """Generic HTTP POST helper."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status not in (200, 201, 202):
+                raise RuntimeError(f"HTTP {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
 
-    req = urllib.request.Request(
+
+def _send_via_brevo(to_email: str, subject: str, html_body: str) -> None:
+    """Send via Brevo (formerly Sendinblue) HTTP API — works on HuggingFace Spaces."""
+    _http_post(
+        "https://api.brevo.com/v3/smtp/email",
+        {
+            "sender":      {"name": EMAIL_FROM_NAME, "email": EMAIL_FROM_ADDR},
+            "to":          [{"email": to_email}],
+            "subject":     subject,
+            "htmlContent": html_body,
+        },
+        {
+            "api-key":      BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "Accept":       "application/json",
+        },
+    )
+
+
+def _send_via_sendgrid(to_email: str, subject: str, html_body: str) -> None:
+    """Send via SendGrid HTTP API."""
+    _http_post(
+        "https://api.sendgrid.com/v3/mail/send",
+        {
+            "from":             {"email": EMAIL_FROM_ADDR, "name": EMAIL_FROM_NAME},
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "subject":          subject,
+            "content":          [{"type": "text/html", "value": html_body}],
+        },
+        {
+            "Authorization": f"Bearer {SENDGRID_API_KEY}",
+            "Content-Type":  "application/json",
+        },
+    )
+
+
+def _send_via_resend(to_email: str, subject: str, html_body: str) -> None:
+    """Send via Resend HTTP API (may be blocked on some cloud IPs)."""
+    from_addr = f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDR}>" if EMAIL_FROM_ADDR else f"{EMAIL_FROM_NAME} <onboarding@resend.dev>"
+    _http_post(
         "https://api.resend.com/emails",
-        data=payload,
-        headers={
+        {
+            "from":    from_addr,
+            "to":      [to_email],
+            "subject": subject,
+            "html":    html_body,
+        },
+        {
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type":  "application/json",
         },
-        method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status not in (200, 201):
-                raise RuntimeError(f"Resend API error: {resp.status}")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        raise RuntimeError(f"Resend API error {e.code}: {body}")
-
-
-def _send_via_smtp(to_email: str, subject: str, html_body: str) -> None:
-    """Fallback: send via Gmail SMTP (blocked on HuggingFace Spaces)."""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = EMAIL_FROM
-    msg["To"]      = to_email
-    msg.attach(MIMEText(html_body, "html"))
-    with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(EMAIL_FROM, to_email, msg.as_string())
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -123,25 +146,27 @@ def request_otp(email: str) -> bool:
         "expires_at": datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES),
     }
 
-    # ── Resend (preferred — works on all cloud platforms) ──────────────────
-    if RESEND_API_KEY:
-        _send_via_resend(email, "Your Document AI verification code", _otp_email_html(otp))
+    subject = "Your Document AI verification code"
+
+    # ── Brevo (recommended — works on HuggingFace Spaces) ─────────────────
+    if BREVO_API_KEY and EMAIL_FROM_ADDR:
+        _send_via_brevo(email, subject, _otp_email_html(otp))
         return True
 
-    # ── SMTP fallback (local dev / non-HF hosting) ─────────────────────────
-    if EMAIL_USER and EMAIL_PASS and EMAIL_PASS != "PASTE_APP_PASSWORD_HERE":
-        try:
-            _send_via_smtp(email, "Your Document AI verification code", _otp_email_html(otp))
-            return True
-        except smtplib.SMTPAuthenticationError:
-            raise RuntimeError("Gmail authentication failed. Use an App Password.")
-        except Exception as exc:
-            raise RuntimeError(f"SMTP error: {exc}")
+    # ── SendGrid ───────────────────────────────────────────────────────────
+    if SENDGRID_API_KEY and EMAIL_FROM_ADDR:
+        _send_via_sendgrid(email, subject, _otp_email_html(otp))
+        return True
+
+    # ── Resend (fallback — may be blocked on HF Spaces) ───────────────────
+    if RESEND_API_KEY:
+        _send_via_resend(email, subject, _otp_email_html(otp))
+        return True
 
     # ── Dev mode — no email configured ────────────────────────────────────
     print(f"\n{'='*52}")
     print(f"  [DEV MODE] OTP for {email}:  {otp}")
-    print(f"  (set RESEND_API_KEY in environment to send real emails)")
+    print(f"  (set BREVO_API_KEY + EMAIL_FROM_ADDR in environment)")
     print(f"{'='*52}\n")
     return False
 
