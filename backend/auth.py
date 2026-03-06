@@ -2,21 +2,21 @@
 auth.py — Email OTP authentication
 -----------------------------------
 Tries multiple HTTP-based email APIs in order (no SMTP — works on HuggingFace Spaces):
-  1. Brevo (formerly Sendinblue) — free 300 emails/day, sign up at brevo.com
-  2. SendGrid — free 100 emails/day, sign up at sendgrid.com
-  3. Resend — free 3000/month (may be blocked on some cloud IPs)
+  1. Mailjet — free 200 emails/day, sign up at mailjet.com
+  2. Brevo (formerly Sendinblue) — free 300 emails/day
+  3. SendGrid — free 100 emails/day
   4. Dev mode — prints OTP to server console
 
-Setup (Brevo — recommended):
-  1. Sign up at brevo.com (free, no credit card)
-  2. Go to Account → SMTP & API → API Keys → Generate
-  3. Set BREVO_API_KEY=your_key in environment variables
-  4. Set EMAIL_FROM_ADDR to your verified sender email
-  5. To verify sender: Brevo dashboard → Senders & IPs → Senders → Add a sender
+Setup (Mailjet — recommended):
+  1. Sign up at mailjet.com (free, sign in with Google)
+  2. Account Settings → REST API → API Key Management
+  3. Set MAILJET_API_KEY and MAILJET_SECRET_KEY in environment variables
+  4. Set EMAIL_FROM_ADDR to the Gmail you signed up with (auto-verified)
 """
 
 import os
 import json
+import base64
 import urllib.request
 import urllib.error
 import random
@@ -26,12 +26,13 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── Config ─────────────────────────────────────────────────────────────────
-BREVO_API_KEY    = os.getenv("BREVO_API_KEY", "")
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-RESEND_API_KEY   = os.getenv("RESEND_API_KEY", "")
+MAILJET_API_KEY    = os.getenv("MAILJET_API_KEY", "")
+MAILJET_SECRET_KEY = os.getenv("MAILJET_SECRET_KEY", "")
+BREVO_API_KEY      = os.getenv("BREVO_API_KEY", "")
+SENDGRID_API_KEY   = os.getenv("SENDGRID_API_KEY", "")
 
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Document AI")
-EMAIL_FROM_ADDR = os.getenv("EMAIL_FROM_ADDR", "")   # e.g. you@yourdomain.com
+EMAIL_FROM_ADDR = os.getenv("EMAIL_FROM_ADDR", "")   # e.g. 776438@gmail.com
 
 OTP_EXPIRY_MINUTES   = 10
 SESSION_EXPIRY_HOURS = 24
@@ -67,7 +68,6 @@ def _otp_email_html(otp: str) -> str:
 
 
 def _http_post(url: str, payload: dict, headers: dict) -> None:
-    """Generic HTTP POST helper."""
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -79,8 +79,29 @@ def _http_post(url: str, payload: dict, headers: dict) -> None:
         raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
 
 
+def _send_via_mailjet(to_email: str, subject: str, html_body: str) -> None:
+    """Send via Mailjet v3.1 API — works on HuggingFace Spaces."""
+    credentials = base64.b64encode(
+        f"{MAILJET_API_KEY}:{MAILJET_SECRET_KEY}".encode()
+    ).decode()
+    _http_post(
+        "https://api.mailjet.com/v3.1/send",
+        {
+            "Messages": [{
+                "From":     {"Email": EMAIL_FROM_ADDR, "Name": EMAIL_FROM_NAME},
+                "To":       [{"Email": to_email}],
+                "Subject":  subject,
+                "HTMLPart": html_body,
+            }]
+        },
+        {
+            "Authorization": f"Basic {credentials}",
+            "Content-Type":  "application/json",
+        },
+    )
+
+
 def _send_via_brevo(to_email: str, subject: str, html_body: str) -> None:
-    """Send via Brevo (formerly Sendinblue) HTTP API — works on HuggingFace Spaces."""
     _http_post(
         "https://api.brevo.com/v3/smtp/email",
         {
@@ -98,7 +119,6 @@ def _send_via_brevo(to_email: str, subject: str, html_body: str) -> None:
 
 
 def _send_via_sendgrid(to_email: str, subject: str, html_body: str) -> None:
-    """Send via SendGrid HTTP API."""
     _http_post(
         "https://api.sendgrid.com/v3/mail/send",
         {
@@ -114,30 +134,12 @@ def _send_via_sendgrid(to_email: str, subject: str, html_body: str) -> None:
     )
 
 
-def _send_via_resend(to_email: str, subject: str, html_body: str) -> None:
-    """Send via Resend HTTP API (may be blocked on some cloud IPs)."""
-    from_addr = f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDR}>" if EMAIL_FROM_ADDR else f"{EMAIL_FROM_NAME} <onboarding@resend.dev>"
-    _http_post(
-        "https://api.resend.com/emails",
-        {
-            "from":    from_addr,
-            "to":      [to_email],
-            "subject": subject,
-            "html":    html_body,
-        },
-        {
-            "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type":  "application/json",
-        },
-    )
-
-
 # ── Public API ─────────────────────────────────────────────────────────────
 
 def request_otp(email: str) -> bool:
     """
     Generate a 6-digit OTP and send it to the email.
-    Returns True if email was sent, False in dev mode (check server console).
+    Returns True if sent, False in dev mode (OTP printed to server console).
     """
     email = email.strip().lower()
     otp   = _generate_otp()
@@ -148,25 +150,21 @@ def request_otp(email: str) -> bool:
 
     subject = "Your Document AI verification code"
 
-    # ── Brevo (recommended — works on HuggingFace Spaces) ─────────────────
+    if MAILJET_API_KEY and MAILJET_SECRET_KEY and EMAIL_FROM_ADDR:
+        _send_via_mailjet(email, subject, _otp_email_html(otp))
+        return True
+
     if BREVO_API_KEY and EMAIL_FROM_ADDR:
         _send_via_brevo(email, subject, _otp_email_html(otp))
         return True
 
-    # ── SendGrid ───────────────────────────────────────────────────────────
     if SENDGRID_API_KEY and EMAIL_FROM_ADDR:
         _send_via_sendgrid(email, subject, _otp_email_html(otp))
         return True
 
-    # ── Resend (fallback — may be blocked on HF Spaces) ───────────────────
-    if RESEND_API_KEY:
-        _send_via_resend(email, subject, _otp_email_html(otp))
-        return True
-
-    # ── Dev mode — no email configured ────────────────────────────────────
     print(f"\n{'='*52}")
     print(f"  [DEV MODE] OTP for {email}:  {otp}")
-    print(f"  (set BREVO_API_KEY + EMAIL_FROM_ADDR in environment)")
+    print(f"  (set MAILJET_API_KEY + MAILJET_SECRET_KEY + EMAIL_FROM_ADDR)")
     print(f"{'='*52}\n")
     return False
 
