@@ -1,22 +1,23 @@
 """
 auth.py — Email OTP authentication
 -----------------------------------
-Tries multiple HTTP-based email APIs in order (no SMTP — works on HuggingFace Spaces):
-  1. Mailjet — free 200 emails/day, sign up at mailjet.com
-  2. Brevo (formerly Sendinblue) — free 300 emails/day
-  3. SendGrid — free 100 emails/day
-  4. Dev mode — prints OTP to server console
+Uses a Vercel relay function to send emails.
+HuggingFace Spaces IPs are blocked by Cloudflare (used by Mailjet, Resend, etc.),
+so the HF backend calls a Vercel serverless function which then calls Mailjet.
 
-Setup (Mailjet — recommended):
-  1. Sign up at mailjet.com (free, sign in with Google)
-  2. Account Settings → REST API → API Key Management
-  3. Set MAILJET_API_KEY and MAILJET_SECRET_KEY in environment variables
-  4. Set EMAIL_FROM_ADDR to the Gmail you signed up with (auto-verified)
+Required env vars on HF Space:
+  EMAIL_RELAY_URL    = https://doc-ai-assistant.vercel.app/api/send-email
+  EMAIL_RELAY_SECRET = (random shared secret — same value set on Vercel)
+
+Required env vars on Vercel:
+  MAILJET_API_KEY    = ...
+  MAILJET_SECRET_KEY = ...
+  EMAIL_FROM_ADDR    = 776438@gmail.com
+  RELAY_SECRET       = (same random secret)
 """
 
 import os
 import json
-import base64
 import urllib.request
 import urllib.error
 import random
@@ -26,13 +27,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── Config ─────────────────────────────────────────────────────────────────
-MAILJET_API_KEY    = os.getenv("MAILJET_API_KEY", "")
-MAILJET_SECRET_KEY = os.getenv("MAILJET_SECRET_KEY", "")
-BREVO_API_KEY      = os.getenv("BREVO_API_KEY", "")
-SENDGRID_API_KEY   = os.getenv("SENDGRID_API_KEY", "")
-
-EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Document AI")
-EMAIL_FROM_ADDR = os.getenv("EMAIL_FROM_ADDR", "")   # e.g. 776438@gmail.com
+EMAIL_RELAY_URL    = os.getenv("EMAIL_RELAY_URL", "")
+EMAIL_RELAY_SECRET = os.getenv("EMAIL_RELAY_SECRET", "")
 
 OTP_EXPIRY_MINUTES   = 10
 SESSION_EXPIRY_HOURS = 24
@@ -67,71 +63,29 @@ def _otp_email_html(otp: str) -> str:
 </div></body></html>"""
 
 
-def _http_post(url: str, payload: dict, headers: dict) -> None:
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+def _send_via_relay(to_email: str, subject: str, html_body: str) -> None:
+    """Send email via Vercel relay function (bypasses HF Spaces Cloudflare block)."""
+    payload = json.dumps({
+        "to":      to_email,
+        "subject": subject,
+        "html":    html_body,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        EMAIL_RELAY_URL,
+        data=payload,
+        headers={
+            "Content-Type":    "application/json",
+            "X-Relay-Secret":  EMAIL_RELAY_SECRET,
+        },
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status not in (200, 201, 202):
-                raise RuntimeError(f"HTTP {resp.status}")
+            if resp.status not in (200, 201):
+                raise RuntimeError(f"Relay HTTP {resp.status}")
     except urllib.error.HTTPError as e:
         body = e.read().decode()
-        raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
-
-
-def _send_via_mailjet(to_email: str, subject: str, html_body: str) -> None:
-    """Send via Mailjet v3.1 API — works on HuggingFace Spaces."""
-    credentials = base64.b64encode(
-        f"{MAILJET_API_KEY}:{MAILJET_SECRET_KEY}".encode()
-    ).decode()
-    _http_post(
-        "https://api.mailjet.com/v3.1/send",
-        {
-            "Messages": [{
-                "From":     {"Email": EMAIL_FROM_ADDR, "Name": EMAIL_FROM_NAME},
-                "To":       [{"Email": to_email}],
-                "Subject":  subject,
-                "HTMLPart": html_body,
-            }]
-        },
-        {
-            "Authorization": f"Basic {credentials}",
-            "Content-Type":  "application/json",
-        },
-    )
-
-
-def _send_via_brevo(to_email: str, subject: str, html_body: str) -> None:
-    _http_post(
-        "https://api.brevo.com/v3/smtp/email",
-        {
-            "sender":      {"name": EMAIL_FROM_NAME, "email": EMAIL_FROM_ADDR},
-            "to":          [{"email": to_email}],
-            "subject":     subject,
-            "htmlContent": html_body,
-        },
-        {
-            "api-key":      BREVO_API_KEY,
-            "Content-Type": "application/json",
-            "Accept":       "application/json",
-        },
-    )
-
-
-def _send_via_sendgrid(to_email: str, subject: str, html_body: str) -> None:
-    _http_post(
-        "https://api.sendgrid.com/v3/mail/send",
-        {
-            "from":             {"email": EMAIL_FROM_ADDR, "name": EMAIL_FROM_NAME},
-            "personalizations": [{"to": [{"email": to_email}]}],
-            "subject":          subject,
-            "content":          [{"type": "text/html", "value": html_body}],
-        },
-        {
-            "Authorization": f"Bearer {SENDGRID_API_KEY}",
-            "Content-Type":  "application/json",
-        },
-    )
+        raise RuntimeError(f"Relay error {e.code}: {body[:300]}")
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -148,23 +102,14 @@ def request_otp(email: str) -> bool:
         "expires_at": datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES),
     }
 
-    subject = "Your Document AI verification code"
-
-    if MAILJET_API_KEY and MAILJET_SECRET_KEY and EMAIL_FROM_ADDR:
-        _send_via_mailjet(email, subject, _otp_email_html(otp))
+    if EMAIL_RELAY_URL and EMAIL_RELAY_SECRET:
+        _send_via_relay(email, "Your Document AI verification code", _otp_email_html(otp))
         return True
 
-    if BREVO_API_KEY and EMAIL_FROM_ADDR:
-        _send_via_brevo(email, subject, _otp_email_html(otp))
-        return True
-
-    if SENDGRID_API_KEY and EMAIL_FROM_ADDR:
-        _send_via_sendgrid(email, subject, _otp_email_html(otp))
-        return True
-
+    # Dev mode — no relay configured
     print(f"\n{'='*52}")
     print(f"  [DEV MODE] OTP for {email}:  {otp}")
-    print(f"  (set MAILJET_API_KEY + MAILJET_SECRET_KEY + EMAIL_FROM_ADDR)")
+    print(f"  (set EMAIL_RELAY_URL + EMAIL_RELAY_SECRET in environment)")
     print(f"{'='*52}\n")
     return False
 
