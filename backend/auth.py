@@ -1,20 +1,21 @@
 """
 auth.py — Email OTP authentication
 -----------------------------------
-Zero-extra-dependencies: uses smtplib (stdlib).
-OTPs stored in memory (resets on server restart — fine for demo/MVP).
+Uses Resend API (HTTP) as primary email sender — works on all cloud platforms
+including HuggingFace Spaces which blocks SMTP ports.
+Falls back to SMTP if RESEND_API_KEY is not set.
 
-Email setup (Gmail):
-  1. Enable 2-Step Verification on your Google account
-  2. Go to myaccount.google.com/apppasswords → create an App Password
-  3. Set EMAIL_USER=you@gmail.com and EMAIL_PASS=the_app_password in backend/.env
-
-If EMAIL_USER / EMAIL_PASS are NOT set, the app runs in dev mode:
-  - OTP is printed to the server console instead of emailed
-  - Response includes {"dev_mode": true} so you know to check console
+Setup (Resend — free, no credit card):
+  1. Sign up at resend.com (free: 3,000 emails/month)
+  2. Go to API Keys → Create API Key
+  3. Set RESEND_API_KEY=re_xxxx in your environment variables
+  4. Set EMAIL_FROM to a verified sender (use onboarding@resend.dev for testing)
 """
 
 import os
+import json
+import urllib.request
+import urllib.error
 import smtplib
 import random
 import string
@@ -25,37 +26,27 @@ from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
 # ── Config ─────────────────────────────────────────────────────────────────
-EMAIL_HOST    = os.getenv("EMAIL_HOST", "smtp.gmail.com")
-EMAIL_PORT    = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_USER    = os.getenv("EMAIL_USER", "")
-EMAIL_PASS    = os.getenv("EMAIL_PASS", "")
-EMAIL_FROM    = os.getenv("EMAIL_FROM", "") or EMAIL_USER
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+EMAIL_FROM     = os.getenv("EMAIL_FROM", "Document AI <onboarding@resend.dev>")
 
-OTP_EXPIRY_MINUTES  = 10
+# SMTP fallback (for local dev)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USER = os.getenv("EMAIL_USER", "")
+EMAIL_PASS = os.getenv("EMAIL_PASS", "")
+
+OTP_EXPIRY_MINUTES   = 10
 SESSION_EXPIRY_HOURS = 24
 
 # ── In-memory stores ───────────────────────────────────────────────────────
-_pending_otps: dict = {}   # email  -> {"otp": str, "expires_at": datetime}
-_sessions: dict     = {}   # token  -> {"email": str, "created_at": str}
+_pending_otps: dict = {}
+_sessions: dict     = {}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _generate_otp() -> str:
     return "".join(random.choices(string.digits, k=6))
-
-
-def _send_email(to_email: str, subject: str, html_body: str) -> None:
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = EMAIL_FROM or "Document AI <noreply@example.com>"
-    msg["To"]      = to_email
-    msg.attach(MIMEText(html_body, "html"))
-    with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(msg["From"], to_email, msg.as_string())
 
 
 def _otp_email_html(otp: str) -> str:
@@ -77,6 +68,47 @@ def _otp_email_html(otp: str) -> str:
 </div></body></html>"""
 
 
+def _send_via_resend(to_email: str, subject: str, html_body: str) -> None:
+    """Send email via Resend HTTP API (works on HuggingFace Spaces)."""
+    payload = json.dumps({
+        "from":    EMAIL_FROM,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html_body,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status not in (200, 201):
+                raise RuntimeError(f"Resend API error: {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise RuntimeError(f"Resend API error {e.code}: {body}")
+
+
+def _send_via_smtp(to_email: str, subject: str, html_body: str) -> None:
+    """Fallback: send via Gmail SMTP (blocked on HuggingFace Spaces)."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = EMAIL_FROM
+    msg["To"]      = to_email
+    msg.attach(MIMEText(html_body, "html"))
+    with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.sendmail(EMAIL_FROM, to_email, msg.as_string())
+
+
 # ── Public API ─────────────────────────────────────────────────────────────
 
 def request_otp(email: str) -> bool:
@@ -91,31 +123,31 @@ def request_otp(email: str) -> bool:
         "expires_at": datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES),
     }
 
-    if not EMAIL_USER or not EMAIL_PASS or EMAIL_PASS == "PASTE_APP_PASSWORD_HERE":
-        # Dev mode: no SMTP configured — print to console
-        print(f"\n{'='*52}")
-        print(f"  [DEV MODE] OTP for {email}:  {otp}")
-        print(f"  (set EMAIL_USER + EMAIL_PASS in .env to send real emails)")
-        print(f"{'='*52}\n")
-        return False
+    # ── Resend (preferred — works on all cloud platforms) ──────────────────
+    if RESEND_API_KEY:
+        _send_via_resend(email, "Your Document AI verification code", _otp_email_html(otp))
+        return True
 
-    try:
-        _send_email(email, "Your Document AI verification code", _otp_email_html(otp))
-    except smtplib.SMTPAuthenticationError:
-        raise RuntimeError(
-            "Gmail authentication failed. Make sure EMAIL_PASS is a Gmail App Password "
-            "(not your regular password). Get one at: myaccount.google.com/apppasswords"
-        )
-    except smtplib.SMTPException as exc:
-        raise RuntimeError(f"Failed to send email: {exc}")
-    return True
+    # ── SMTP fallback (local dev / non-HF hosting) ─────────────────────────
+    if EMAIL_USER and EMAIL_PASS and EMAIL_PASS != "PASTE_APP_PASSWORD_HERE":
+        try:
+            _send_via_smtp(email, "Your Document AI verification code", _otp_email_html(otp))
+            return True
+        except smtplib.SMTPAuthenticationError:
+            raise RuntimeError("Gmail authentication failed. Use an App Password.")
+        except Exception as exc:
+            raise RuntimeError(f"SMTP error: {exc}")
+
+    # ── Dev mode — no email configured ────────────────────────────────────
+    print(f"\n{'='*52}")
+    print(f"  [DEV MODE] OTP for {email}:  {otp}")
+    print(f"  (set RESEND_API_KEY in environment to send real emails)")
+    print(f"{'='*52}\n")
+    return False
 
 
 def verify_otp(email: str, otp: str) -> str:
-    """
-    Verify the OTP and return a session token.
-    Raises ValueError with a human-readable message on failure.
-    """
+    """Verify OTP, return session token. Raises ValueError on failure."""
     email  = email.strip().lower()
     record = _pending_otps.get(email)
 
@@ -140,7 +172,7 @@ def verify_otp(email: str, otp: str) -> str:
 
 
 def get_session(token: str) -> Optional[dict]:
-    """Return session dict if the token is valid and not expired, else None."""
+    """Return session dict if valid and not expired, else None."""
     session = _sessions.get(token)
     if not session:
         return None
