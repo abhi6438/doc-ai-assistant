@@ -11,11 +11,11 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import axios from 'axios';
 import {
   X, RefreshCw, Upload, MessageSquare, Users,
-  TrendingUp, Clock, Key, BarChart2, Activity,
+  TrendingUp, Key, BarChart2, Activity,
   FileText, HelpCircle, Lock,
 } from 'lucide-react';
 
