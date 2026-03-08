@@ -45,8 +45,11 @@ TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "5"))
 
 # System message used with all chat-based providers
 SYSTEM_PROMPT = (
-    "You are a precise document Q&A assistant. "
-    "Answer concisely and accurately using only the provided context. "
+    "You are a strict document Q&A assistant. "
+    "You ONLY answer questions based on the document context provided to you. "
+    "You do NOT use any outside knowledge. "
+    "If the question is not covered by the document, you say so clearly and "
+    "tell the user what topics the document does cover. "
     "Use markdown formatting where helpful (bullet points, bold key terms)."
 )
 
@@ -56,15 +59,27 @@ SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 def build_rag_prompt(question: str, context_chunks: List[str]) -> str:
-    """Build a RAG prompt containing retrieved context + the user's question."""
+    """
+    Build the RAG prompt sent to the LLM.
+
+    The prompt enforces strict document-only answers:
+    - If the question is answered by the context → give the answer
+    - If the question is NOT related to the context → tell the user what
+      topics the document does cover so they can ask a relevant question
+    """
     context = "\n\n---\n\n".join(context_chunks)
     return (
-        f"You are a helpful document assistant. Answer the user's question "
-        f"based ONLY on the context provided below. If the answer cannot be "
-        f'found in the context, say "I couldn\'t find that information in the '
-        f'uploaded document."\n\n'
-        f"CONTEXT:\n{context}\n\n"
-        f"QUESTION:\n{question}\n\n"
+        f"You are a document Q&A assistant. Your job is to answer questions "
+        f"STRICTLY based on the document context below. Do NOT use any outside knowledge.\n\n"
+        f"RULES:\n"
+        f"1. If the question is answered by the context, give a clear and accurate answer.\n"
+        f"2. If the question is NOT related to the document, respond with:\n"
+        f'   "This question is not covered in the uploaded document. '
+        f"Based on the document, I can help you with topics such as: [list 3-5 key topics "
+        f'from the context]."\n'
+        f"3. Never make up information. Never use knowledge outside the context.\n\n"
+        f"DOCUMENT CONTEXT:\n{context}\n\n"
+        f"USER QUESTION:\n{question}\n\n"
         f"ANSWER:"
     )
 
