@@ -196,17 +196,21 @@ def call_llm(prompt: str) -> str:
 # Main RAG pipeline
 # ---------------------------------------------------------------------------
 
-def answer_question(question: str) -> Dict[str, Any]:
+def answer_question(question: str, user_email: str) -> Dict[str, Any]:
     """
     End-to-end RAG pipeline:
       1. Embed the user's question
-      2. Retrieve the top-K most similar document chunks from ChromaDB
+      2. Retrieve the top-K most similar chunks — ONLY from this user's uploads
       3. Assemble a RAG prompt (context + question)
       4. Send prompt to the LLM and get an answer
       5. Return answer + source excerpts (shown in UI)
+
+    Args:
+        question:   The user's question text.
+        user_email: Only search chunks uploaded by this user.
     """
-    # Step 1 + 2: semantic search in ChromaDB
-    similar_chunks = search_similar_chunks(question, n_results=TOP_K_RESULTS)
+    # Step 1 + 2: semantic search scoped to this user's documents
+    similar_chunks = search_similar_chunks(question, user_email=user_email, n_results=TOP_K_RESULTS)
 
     if not similar_chunks:
         return {

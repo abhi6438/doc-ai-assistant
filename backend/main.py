@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 # Internal modules
 from pdf_loader  import load_and_chunk_pdf
-from vector_store import store_chunks, clear_all_chunks
+from vector_store import store_chunks, clear_user_chunks
 from rag_service  import answer_question, LLM_BACKEND
 from analytics    import log_event, get_stats
 from auth         import request_otp, verify_otp, get_session, list_users
@@ -232,16 +232,16 @@ async def upload_pdf(
             detail="No text could be extracted. The file may be a scanned image.",
         )
 
-    # Clear all previous document chunks so only the new upload is in the store.
-    # Without this, old documents accumulate and pollute search results.
-    clear_all_chunks()
+    # Delete this user's previous chunks before storing the new document.
+    # Only THIS user's chunks are removed — other users are unaffected.
+    clear_user_chunks(session["email"])
 
     # Create a unique document ID from the filename + a short random suffix
     safe_name = (file.filename or "doc").replace(" ", "_").rsplit(".", 1)[0]
     doc_id    = f"{safe_name}_{uuid.uuid4().hex[:8]}"
 
     try:
-        num_chunks = store_chunks(chunks, doc_id)
+        num_chunks = store_chunks(chunks, doc_id, user_email=session["email"])
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to store embeddings: {str(exc)}")
 
@@ -282,7 +282,7 @@ def ask_question_endpoint(
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        result = answer_question(question)
+        result = answer_question(question, user_email=session["email"])
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:

@@ -5,14 +5,13 @@ Manages ChromaDB interactions for storing and searching document embeddings.
 
 ChromaDB runs entirely in-process / on disk — no external service needed.
 
-Responsibilities:
-- Initialize the ChromaDB client and "documents" collection
-- Store text chunks with their embeddings and metadata
-- Perform similarity search given a query embedding
+Each user's chunks are stored with their email in metadata so:
+  - Upload  → deletes only THAT user's old chunks, then stores new ones
+  - Search  → returns only THAT user's chunks (other users' docs are invisible)
+  - Two users logged in simultaneously never interfere with each other
 """
 
 import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any
 import uuid
@@ -21,16 +20,13 @@ import os
 # ---------------------------------------------------------------------------
 # Embedding model
 # ---------------------------------------------------------------------------
-# all-MiniLM-L6-v2 is fast, lightweight (~80 MB) and works well for semantic
-# similarity tasks. It produces 384-dimensional vectors.
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
-# Lazy-load the model once and reuse it across requests
-_embedding_model = None  # SentenceTransformer instance (lazy-loaded)
+_embedding_model = None   # lazy-loaded singleton
 
 
 def get_embedding_model() -> SentenceTransformer:
-    """Return the singleton SentenceTransformer instance."""
+    """Return the singleton SentenceTransformer instance (loaded once)."""
     global _embedding_model
     if _embedding_model is None:
         print(f"Loading embedding model: {EMBEDDING_MODEL_NAME} ...")
@@ -40,34 +36,25 @@ def get_embedding_model() -> SentenceTransformer:
 
 
 # ---------------------------------------------------------------------------
-# ChromaDB client
+# ChromaDB client — single shared collection, users separated by metadata
 # ---------------------------------------------------------------------------
 CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
-COLLECTION_NAME = "documents"
+COLLECTION_NAME    = "documents"
 
-_chroma_client = None   # chromadb.PersistentClient instance (lazy-loaded)
-_collection = None      # chromadb.Collection instance (lazy-loaded)
+_chroma_client = None   # lazy-loaded
+_collection    = None   # lazy-loaded
 
 
 def get_chroma_collection():
-    """
-    Return (and lazily create) the persistent ChromaDB collection.
-
-    The collection persists to disk so embeddings survive server restarts.
-    """
+    """Return (and lazily create) the shared ChromaDB collection."""
     global _chroma_client, _collection
     if _chroma_client is None:
-        # PersistentClient stores data on disk at CHROMA_PERSIST_DIR
         _chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-
     if _collection is None:
-        # get_or_create_collection is idempotent — safe to call on every startup
         _collection = _chroma_client.get_or_create_collection(
             name=COLLECTION_NAME,
-            # Use cosine similarity for semantic search
             metadata={"hnsw:space": "cosine"},
         )
-
     return _collection
 
 
@@ -76,46 +63,53 @@ def get_chroma_collection():
 # ---------------------------------------------------------------------------
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """
-    Convert a list of text strings into embedding vectors.
-
-    Args:
-        texts: List of text strings to embed.
-
-    Returns:
-        List of float vectors (one per input text).
-    """
+    """Convert a list of text strings into embedding vectors."""
     model = get_embedding_model()
     embeddings = model.encode(texts, show_progress_bar=False)
-    # Convert numpy arrays to plain Python lists for ChromaDB compatibility
     return [emb.tolist() for emb in embeddings]
 
 
-def store_chunks(chunks: List[str], doc_id: str) -> int:
+def clear_user_chunks(user_email: str) -> None:
     """
-    Embed and store text chunks in ChromaDB.
+    Delete ALL chunks that belong to a specific user.
+
+    Called before every upload so the user always starts fresh with their
+    new document — their old chunks are gone, but other users are unaffected.
+    """
+    collection = get_chroma_collection()
+    results = collection.get(where={"user_email": user_email})
+    if results["ids"]:
+        collection.delete(ids=results["ids"])
+        print(f"[vector_store] Cleared {len(results['ids'])} old chunks for {user_email}")
+
+
+def store_chunks(chunks: List[str], doc_id: str, user_email: str) -> int:
+    """
+    Embed and store text chunks in ChromaDB, tagged with the user's email.
 
     Args:
-        chunks: List of text chunks extracted from a PDF.
-        doc_id: Identifier for the source document (used as metadata).
+        chunks:     Text chunks extracted from the uploaded document.
+        doc_id:     Unique identifier for this document.
+        user_email: Email of the user who uploaded the document.
 
     Returns:
         Number of chunks stored.
     """
     collection = get_chroma_collection()
 
-    # Generate embeddings for all chunks in one batch (faster)
     embeddings = embed_texts(chunks)
 
-    # Create unique IDs for each chunk so we can upsert safely
     ids = [f"{doc_id}_chunk_{i}_{uuid.uuid4().hex[:8]}" for i in range(len(chunks))]
 
-    # Store text, embedding, and metadata together
     collection.add(
         ids=ids,
         embeddings=embeddings,
-        documents=chunks,          # raw text stored alongside embedding
-        metadatas=[{"doc_id": doc_id, "chunk_index": i} for i in range(len(chunks))],
+        documents=chunks,
+        # Store both doc_id and user_email so we can filter by either
+        metadatas=[
+            {"doc_id": doc_id, "chunk_index": i, "user_email": user_email}
+            for i in range(len(chunks))
+        ],
     )
 
     return len(chunks)
@@ -123,34 +117,41 @@ def store_chunks(chunks: List[str], doc_id: str) -> int:
 
 def search_similar_chunks(
     query: str,
+    user_email: str,
     n_results: int = 5,
 ) -> List[Dict[str, Any]]:
     """
-    Find the most semantically similar chunks to the user's question.
+    Find chunks most similar to the query, restricted to the given user's docs.
 
     Args:
-        query:     The user's question text.
-        n_results: How many top chunks to return.
+        query:      The user's question.
+        user_email: Only search chunks uploaded by this user.
+        n_results:  How many top chunks to return.
 
     Returns:
         List of dicts with keys: "text", "doc_id", "distance"
     """
     collection = get_chroma_collection()
 
-    # Check if the collection has any documents
     if collection.count() == 0:
         return []
 
-    # Embed the query using the same model used at ingestion time
+    # Count how many chunks this user actually has
+    user_chunks = collection.get(where={"user_email": user_email})
+    user_count  = len(user_chunks["ids"])
+
+    if user_count == 0:
+        return []   # user hasn't uploaded anything yet
+
     query_embedding = embed_texts([query])[0]
 
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),  # can't ask for more than stored
+        n_results=min(n_results, user_count),
+        where={"user_email": user_email},   # ← key: only this user's chunks
         include=["documents", "metadatas", "distances"],
     )
 
-    # Flatten the nested lists returned by ChromaDB
     similar_chunks = []
     for text, metadata, distance in zip(
         results["documents"][0],
@@ -158,43 +159,9 @@ def search_similar_chunks(
         results["distances"][0],
     ):
         similar_chunks.append({
-            "text": text,
+            "text":   text,
             "doc_id": metadata.get("doc_id", "unknown"),
-            "distance": distance,   # lower = more similar (cosine distance)
+            "distance": distance,
         })
 
     return similar_chunks
-
-
-def clear_all_chunks() -> None:
-    """
-    Delete ALL chunks from ChromaDB so a newly uploaded document starts fresh.
-
-    Called before every upload so only the current document is ever in the store.
-    Without this, chunks from previous uploads accumulate and pollute answers.
-    """
-    global _collection
-    if _chroma_client is None:
-        return
-    try:
-        _chroma_client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        pass
-    # Re-create a clean empty collection
-    _collection = _chroma_client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-    )
-
-
-def delete_document_chunks(doc_id: str) -> None:
-    """
-    Remove all stored chunks belonging to a specific document.
-
-    Args:
-        doc_id: The document identifier used when storing chunks.
-    """
-    collection = get_chroma_collection()
-    results = collection.get(where={"doc_id": doc_id})
-    if results["ids"]:
-        collection.delete(ids=results["ids"])
