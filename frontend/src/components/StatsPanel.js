@@ -169,7 +169,7 @@ function AdminLogin({ onLogin }) {
 
 // ── Main StatsPanel ───────────────────────────────────────
 export default function StatsPanel({ onClose }) {
-  const [adminKey, setAdminKey]     = useState(() => sessionStorage.getItem('adminKey') || '');
+  const [adminKey, setAdminKey]     = useState(() => localStorage.getItem('adminKey') || '');
   const [stats, setStats]           = useState(null);
   const [loading, setLoading]       = useState(false);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -183,7 +183,7 @@ export default function StatsPanel({ onClose }) {
       setLastRefresh(new Date());
     } catch {
       setAdminKey('');
-      sessionStorage.removeItem('adminKey');
+      localStorage.removeItem('adminKey');
     } finally {
       setLoading(false);
     }
@@ -202,7 +202,7 @@ export default function StatsPanel({ onClose }) {
   }, [adminKey, fetchStats]);
 
   const handleLogin = (key) => {
-    sessionStorage.setItem('adminKey', key);
+    localStorage.setItem('adminKey', key);
     setAdminKey(key);
   };
 
@@ -338,25 +338,32 @@ export default function StatsPanel({ onClose }) {
                 </div>
               </div>
 
-              {/* Registered users */}
+              {/* Per-user activity breakdown */}
               <div className="glass dark:glass rounded-2xl p-4">
                 <h3 className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">
-                  <Users className="w-3.5 h-3.5" /> Registered Users ({stats.registered_users?.length ?? 0})
+                  <Users className="w-3.5 h-3.5" /> User Activity ({stats.per_user?.length ?? 0} users)
                 </h3>
-                <div className="max-h-48 overflow-y-auto flex flex-col gap-1">
-                  {!stats.registered_users?.length ? (
-                    <p className="text-xs text-slate-400 text-center py-4">No verified users yet</p>
+                <div className="max-h-64 overflow-y-auto flex flex-col gap-1">
+                  {!stats.per_user?.length ? (
+                    <p className="text-xs text-slate-400 text-center py-4">No users yet</p>
                   ) : (
-                    stats.registered_users.map((u, i) => (
-                      <div key={i} className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-gray-800 last:border-0">
-                        <div className="flex items-center gap-2">
+                    stats.per_user.map((u, i) => (
+                      <div key={i} className="flex items-center justify-between py-2 border-b border-slate-100 dark:border-gray-800 last:border-0">
+                        <div className="flex items-center gap-2 min-w-0">
                           <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
                             {u.email?.[0]?.toUpperCase() || '?'}
                           </div>
-                          <span className="text-xs text-slate-700 dark:text-slate-300 font-medium truncate max-w-[180px]">{u.email}</span>
+                          <div className="min-w-0">
+                            <div className="text-xs text-slate-700 dark:text-slate-300 font-medium truncate max-w-[160px]">{u.email}</div>
+                            <div className="text-[10px] text-slate-400 flex gap-2 mt-0.5">
+                              <span title="Logins">🔑 {u.logins}</span>
+                              <span title="Uploads">📄 {u.uploads}</span>
+                              <span title="Questions">💬 {u.questions}</span>
+                            </div>
+                          </div>
                         </div>
                         <span className="text-[10px] text-slate-400 flex-shrink-0 ml-2">
-                          {new Date(u.verified_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                          {u.last_seen ? new Date(u.last_seen).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '—'}
                         </span>
                       </div>
                     ))

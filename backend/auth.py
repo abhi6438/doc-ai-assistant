@@ -34,6 +34,14 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
+# Import analytics lazily to avoid circular imports
+def _log_login(email: str) -> None:
+    try:
+        from analytics import log_event
+        log_event("user_login", {"user_email": email})
+    except Exception:
+        pass
+
 # ── Configuration ──────────────────────────────────────────────────────────
 # URL of the Vercel serverless function that sends the email via Gmail SMTP
 EMAIL_RELAY_URL    = os.getenv("EMAIL_RELAY_URL", "")
@@ -167,6 +175,9 @@ def verify_otp(email: str, otp: str) -> str:
 
     # OTP is correct — remove it so it can't be reused
     _pending_otps.pop(email, None)
+
+    # Log the successful login for analytics
+    _log_login(email)
 
     # Create a new session token and store it
     token = uuid.uuid4().hex
