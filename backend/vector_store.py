@@ -166,6 +166,27 @@ def search_similar_chunks(
     return similar_chunks
 
 
+def clear_all_chunks() -> None:
+    """
+    Delete ALL chunks from ChromaDB so a newly uploaded document starts fresh.
+
+    Called before every upload so only the current document is ever in the store.
+    Without this, chunks from previous uploads accumulate and pollute answers.
+    """
+    global _collection
+    if _chroma_client is None:
+        return
+    try:
+        _chroma_client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    # Re-create a clean empty collection
+    _collection = _chroma_client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
 def delete_document_chunks(doc_id: str) -> None:
     """
     Remove all stored chunks belonging to a specific document.

@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 # Internal modules
 from pdf_loader  import load_and_chunk_pdf
-from vector_store import store_chunks
+from vector_store import store_chunks, clear_all_chunks
 from rag_service  import answer_question, LLM_BACKEND
 from analytics    import log_event, get_stats
 from auth         import request_otp, verify_otp, get_session, list_users
@@ -231,6 +231,10 @@ async def upload_pdf(
             status_code=422,
             detail="No text could be extracted. The file may be a scanned image.",
         )
+
+    # Clear all previous document chunks so only the new upload is in the store.
+    # Without this, old documents accumulate and pollute search results.
+    clear_all_chunks()
 
     # Create a unique document ID from the filename + a short random suffix
     safe_name = (file.filename or "doc").replace(" ", "_").rsplit(".", 1)[0]
