@@ -1,3 +1,13 @@
+---
+title: Doc AI Assistant
+emoji: 🤖
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # Document AI Assistant
 
 An AI-powered SaaS application — upload PDFs and ask questions in natural language.
